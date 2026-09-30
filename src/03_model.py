@@ -10,11 +10,10 @@ comparison plots. Best model is saved for the business value script.
 import warnings
 warnings.filterwarnings("ignore")
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mtick
-import seaborn as sns
 import shap
 import pickle
 from pathlib import Path
@@ -23,9 +22,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.metrics import (
-    roc_auc_score, average_precision_score,
-    classification_report, RocCurveDisplay, PrecisionRecallDisplay,
-    confusion_matrix
+    roc_auc_score, average_precision_score, classification_report,
+    roc_curve, precision_recall_curve, confusion_matrix
 )
 from xgboost import XGBClassifier
 
@@ -37,8 +35,13 @@ OUTPUTS = ROOT / "outputs"
 FIGS.mkdir(exist_ok=True)
 OUTPUTS.mkdir(exist_ok=True)
 
-sns.set_theme(style="whitegrid", font_scale=1.1)
-plt.rcParams.update({"figure.dpi": 150, "savefig.bbox": "tight"})
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from style import INK, GOLD, GREY, LIGHT, DARK_GOLD, SUBTLE, SEQ, LOW_HIGH, apply_style, frame, save
+
+apply_style()
+MODEL_COLOURS = {"Random Forest": INK, "XGBoost": GOLD, "Logistic Regression": GREY}
+ECONOMIC = {"econ_score", "nr.employed", "euribor3m", "emp.var.rate", "high_rates",
+            "cons.conf.idx", "stable_economy", "cons.price.idx"}
 
 
 def load_splits():
@@ -108,95 +111,117 @@ def train_and_evaluate(models: dict, X_train, X_test, y_train, y_test) -> dict:
 
 
 def plot_roc_pr_curves(fitted: dict, metrics: dict, X_test, y_test) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    colours = ["#2563EB", "#16A34A", "#DC2626"]
-
-    for (name, model), colour in zip(fitted.items(), colours):
-        y_prob = metrics[name]["y_prob"]
-        RocCurveDisplay.from_predictions(
-            y_test, y_prob, ax=axes[0],
-            name=name,
-            color=colour, alpha=0.85
-        )
-        PrecisionRecallDisplay.from_predictions(
-            y_test, y_prob, ax=axes[1],
-            name=name,
-            color=colour, alpha=0.85
-        )
-
-    axes[0].set_title("ROC Curves — Test Set", fontweight="bold")
-    axes[0].plot([0,1],[0,1],"k--",lw=0.8,label="Random")
-    axes[0].legend(fontsize=9)
-
-    axes[1].set_title("Precision-Recall Curves — Test Set", fontweight="bold")
-    axes[1].legend(fontsize=9)
-
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))
+    fig.subplots_adjust(top=0.78, wspace=0.3)
+    order = ["Logistic Regression", "XGBoost", "Random Forest"]   # draw the leaders last
     for ax in axes:
-        sns.despine(ax=ax)
-
-    fig.suptitle("Model Comparison: ROC & Precision-Recall", fontweight="bold", y=1.02)
-    fig.tight_layout()
-    fig.savefig(FIGS / "05_roc_pr_curves.png")
-    plt.close()
-    print("Saved: 05_roc_pr_curves.png")
+        ax.grid(axis="y", color=LIGHT, lw=1)
+    for name in order:
+        y_prob, col = metrics[name]["y_prob"], MODEL_COLOURS[name]
+        fpr, tpr, _ = roc_curve(y_test, y_prob)
+        prec, rec, _ = precision_recall_curve(y_test, y_prob)
+        lw = 1.5 if name == "Logistic Regression" else 2
+        axes[0].plot(fpr, tpr, color=col, lw=lw)
+        axes[1].plot(rec, prec, color=col, lw=lw)
+    axes[0].plot([0, 1], [0, 1], color=GREY, lw=1, ls="--")
+    axes[0].text(0.62, 0.55, "random guessing", color=GREY, fontsize=8.5, rotation=33)
+    axes[1].axhline(y_test.mean(), color=GREY, lw=1, ls="--")
+    axes[1].text(0.02, y_test.mean() - 0.015, f"random guessing ({y_test.mean():.0%})", color=GREY,
+                 fontsize=8.5, ha="left", va="top")
+    # direct labels, one line per model, in the empty lower-right of the ROC panel
+    for i, name in enumerate(["Random Forest", "XGBoost", "Logistic Regression"]):
+        m = metrics[name]
+        axes[0].text(0.98, 0.26 - 0.09 * i, f"{name}  AUC {m['ROC-AUC']:.3f}", transform=axes[0].transAxes,
+                     ha="right", fontsize=9, fontweight="bold",
+                     color=DARK_GOLD if name == "XGBoost" else MODEL_COLOURS[name])
+        axes[1].text(0.98, 0.95 - 0.09 * i, f"{name}  AP {m['Avg Precision']:.3f}", transform=axes[1].transAxes,
+                     ha="right", va="top", fontsize=9, fontweight="bold",
+                     color=DARK_GOLD if name == "XGBoost" else MODEL_COLOURS[name])
+    axes[0].set(xlabel="False positive rate", ylabel="True positive rate", xlim=(0, 1), ylim=(0, 1.01))
+    axes[1].set(xlabel="Recall (share of subscribers found)", ylabel="Precision (share of calls that convert)",
+                xlim=(0, 1), ylim=(0, 1.01))
+    axes[0].set_title("ROC curve")
+    axes[1].set_title("Precision-recall curve")
+    frame(fig, "Random Forest and XGBoost tie, and both beat logistic regression",
+          f"Held-out test set of {len(y_test):,} clients, using only information available before the call.")
+    save(fig, FIGS / "05_roc_pr_curves.png")
 
 
 def plot_confusion_matrices(metrics: dict, y_test) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    model_names = list(metrics.keys())
-    for ax, name in zip(axes, model_names):
+    names = ["Logistic Regression", "Random Forest", "XGBoost"]
+    fig, axes = plt.subplots(1, 3, figsize=(11, 3.9))
+    fig.subplots_adjust(top=0.68, wspace=0.35)
+    for ax, name in zip(axes, names):
         cm = confusion_matrix(y_test, metrics[name]["y_pred"])
-        sns.heatmap(cm, annot=True, fmt=",", cmap="Blues", ax=ax,
-                    xticklabels=["No","Yes"], yticklabels=["No","Yes"],
-                    linewidths=0.5, cbar=False)
-        ax.set_title(name, fontweight="bold")
+        ax.imshow(cm / cm.sum(axis=1, keepdims=True), cmap=SEQ, vmin=0, vmax=1)
+        for (i, j), v in np.ndenumerate(cm):
+            share = v / cm[i].sum()
+            ax.text(j, i, f"{v:,}\n{share:.0%} of row", ha="center", va="center", fontsize=9,
+                    color="white" if share > 0.55 else INK)
+        ax.set_xticks([0, 1], ["No", "Yes"])
+        ax.set_yticks([0, 1], ["No", "Yes"])
         ax.set_xlabel("Predicted")
-        ax.set_ylabel("Actual")
-    fig.suptitle("Confusion Matrices (threshold = 0.4)", fontweight="bold", y=1.02)
-    fig.tight_layout()
-    fig.savefig(FIGS / "06_confusion_matrices.png")
-    plt.close()
-    print("Saved: 06_confusion_matrices.png")
+        ax.set_ylabel("Actual" if name == names[0] else "")
+        ax.grid(False)
+        ax.spines["bottom"].set_visible(False)
+        recall, precision = cm[1, 1] / cm[1].sum(), cm[1, 1] / cm[:, 1].sum()
+        ax.set_title(f"{name}\n\n", fontsize=10.5)
+        ax.text(0, 1.03, f"finds {recall:.0%} of subscribers\n{precision:.0%} of flagged clients convert",
+                transform=ax.transAxes, fontsize=8.5, color=SUBTLE)
+    cm = confusion_matrix(y_test, metrics["XGBoost"]["y_pred"])
+    frame(fig, f"At a 0.4 cut-off, XGBoost finds {cm[1, 1] / cm[1].sum():.0%} of subscribers, "
+               f"but most flagged clients still say no",
+          "Test-set predictions with each model's score cut at 0.4. Shading shows the share of each actual "
+          "outcome (row).")
+    save(fig, FIGS / "06_confusion_matrices.png")
 
 
 def plot_feature_importance(fitted: dict, X_train) -> None:
-    """Random Forest permutation importance — top 15 features."""
+    """Random Forest impurity importance: top 15 features, economic indicators highlighted."""
     rf = fitted["Random Forest"]
     importances = pd.Series(rf.feature_importances_, index=X_train.columns)
+    econ_share = importances[importances.index.isin(ECONOMIC)].sum() / importances.sum()
     top15 = importances.nlargest(15).sort_values()
+    colours = [GOLD if f in ECONOMIC else INK for f in top15.index]
 
-    fig, ax = plt.subplots(figsize=(9, 6))
-    bars = ax.barh(top15.index, top15.values,
-                   color="#2563EB", alpha=0.85, edgecolor="white")
-    for bar, val in zip(bars, top15.values):
-        ax.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height() / 2,
-                f"{val:.3f}", va="center", fontsize=8)
-    ax.set_title("Random Forest: Top 15 Feature Importances", fontweight="bold", pad=12)
-    ax.set_xlabel("Mean Decrease in Impurity")
-    sns.despine(ax=ax, left=True)
-    fig.tight_layout()
-    fig.savefig(FIGS / "07_feature_importance.png")
-    plt.close()
-    print("Saved: 07_feature_importance.png")
+    fig, ax = plt.subplots(figsize=(8, 5.6))
+    fig.subplots_adjust(top=0.82, left=0.27)
+    ax.barh(top15.index, top15.values, color=colours, height=0.7)
+    for i, (f, val) in enumerate(top15.items()):
+        ax.text(val + 0.002, i, f"{val:.3f}", va="center", fontsize=8.5,
+                color=DARK_GOLD if f in ECONOMIC else INK)
+    ax.set_xlabel("Mean decrease in impurity")
+    ax.set_xlim(0, top15.max() * 1.15)
+    ax.text(0.98, 0.3, "\u25a0 economic indicator", transform=ax.transAxes, ha="right",
+            color=DARK_GOLD, fontsize=9, fontweight="bold")
+    ax.text(0.98, 0.23, "\u25a0 client or campaign", transform=ax.transAxes, ha="right",
+            color=INK, fontsize=9, fontweight="bold")
+    frame(fig, f"The forest leans mainly on economic indicators ({econ_share:.0%} of its importance)",
+          "Top 15 features by random forest importance. The indicators mostly record when a call was "
+          "made,\nso part of the model's skill is knowing which period it is in.")
+    save(fig, FIGS / "07_feature_importance.png")
 
 
 def plot_shap(fitted: dict, X_test) -> None:
-    """SHAP beeswarm for XGBoost — most interpretable summary."""
+    """SHAP beeswarm for XGBoost."""
     print("  Computing SHAP values (XGBoost) …")
     xgb = fitted["XGBoost"]
     sample = X_test.sample(2000, random_state=42)  # fast subsample
-    explainer = shap.TreeExplainer(xgb)
-    shap_vals = explainer.shap_values(sample)
+    shap_vals = shap.TreeExplainer(xgb).shap_values(sample)
 
-    fig, ax = plt.subplots(figsize=(10, 7))
-    shap.summary_plot(shap_vals, sample, plot_type="dot",
-                      max_display=15, show=False, plot_size=None)
-    plt.title("SHAP Feature Impact — XGBoost (n=2,000 sample)",
-              fontweight="bold", pad=12)
-    plt.tight_layout()
-    plt.savefig(FIGS / "08_shap_beeswarm.png")
-    plt.close()
-    print("Saved: 08_shap_beeswarm.png")
+    fig = plt.figure(figsize=(9, 6.6))
+    shap.summary_plot(shap_vals, sample, plot_type="dot", max_display=15, show=False,
+                      plot_size=None, cmap=LOW_HIGH, color_bar_label="Feature value")
+    fig.subplots_adjust(top=0.84)
+    ax = fig.axes[0]
+    ax.grid(axis="x", color=LIGHT, lw=1)
+    ax.set_xlabel("SHAP value: push towards subscribing (right) or not (left)", color=INK, fontsize=10)
+    ax.tick_params(axis="y", labelsize=10, labelcolor=INK)
+    ax.tick_params(axis="x", labelsize=9.5, labelcolor=INK)
+    frame(fig, "Economic context and contact history drive XGBoost's predictions",
+          "Each dot is one of 2,000 test clients. Marigold = high feature value, blue = low. Low employment "
+          "and\ninterest rates push predictions up; many contacts this campaign push them down.")
+    save(fig, FIGS / "08_shap_beeswarm.png")
 
 
 def time_split_check() -> float:

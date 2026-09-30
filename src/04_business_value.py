@@ -18,11 +18,11 @@ Assumptions (illustrative, easily updated):
 import warnings
 warnings.filterwarnings("ignore")
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
-import seaborn as sns
 import pickle
 from pathlib import Path
 
@@ -32,8 +32,10 @@ DATA    = ROOT / "data"
 FIGS    = ROOT / "figures"
 OUTPUTS = ROOT / "outputs"
 
-sns.set_theme(style="whitegrid", font_scale=1.1)
-plt.rcParams.update({"figure.dpi": 150, "savefig.bbox": "tight"})
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from style import INK, GOLD, GREY, LIGHT, DARK_GOLD, SUBTLE, apply_style, frame, save
+
+apply_style()
 
 # ── Business parameters ────────────────────────────────────────────────────
 REVENUE_PER_CONVERSION = 150   # £ margin on average term deposit
@@ -95,47 +97,53 @@ def profit_curve(y_true, y_prob):
 
 
 def plot_strategy_comparison(df_strat: pd.DataFrame, y_true, y_prob) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5), gridspec_kw={"width_ratios": [1, 1.4]})
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), gridspec_kw={"width_ratios": [1, 1.6]})
+    fig.subplots_adjust(top=0.78, wspace=0.25)
+    d = df_strat.set_index("Strategy")
 
     # Left: same budget, different targeting
-    sub = df_strat[df_strat.Strategy.isin(["Random 30%", "Model top 30%"])]
-    bars = axes[0].bar(sub.Strategy, sub.Conversions, color=["#94A3B8", "#2563EB"], width=0.5)
-    for bar, (_, r) in zip(bars, sub.iterrows()):
-        axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 10,
-                     f"{r.Conversions:,} subscribers\n{r['Conversion Rate']:.0%} conversion",
-                     ha="center", va="bottom", fontsize=10, fontweight="bold")
-    axes[0].set_ylim(0, sub.Conversions.max() * 1.3)
-    axes[0].set_title(f"Same budget ({sub['Clients Contacted'].iloc[0]:,} calls), different targeting",
-                      fontweight="bold")
-    axes[0].set_ylabel("Subscriptions won")
-    sns.despine(ax=axes[0], left=True)
+    ax = axes[0]
+    sub = d.loc[["Random 30%", "Model top 30%"]]
+    ax.bar(["Random\n30%", "Model's\ntop 30%"], sub.Conversions, color=[GREY, GOLD], width=0.55)
+    for i, (_, r) in enumerate(sub.iterrows()):
+        ax.text(i, r.Conversions + 12, f"{int(r.Conversions):,}", ha="center", va="bottom", fontsize=13,
+                fontweight="bold", color=DARK_GOLD if i else INK)
+        ax.text(i, r.Conversions / 2, f"{r['Conversion Rate']:.0%}\nconvert", ha="center", va="center",
+                fontsize=9, color="white" if i == 0 else INK)
+    ax.set_ylim(0, sub.Conversions.max() * 1.18)
+    ax.set_yticks([])
+    ax.grid(False)
+    ax.set_title(f"Subscriptions from {int(sub['Clients Contacted'].iloc[0]):,} calls")
 
     # Right: profit by depth of calling
+    ax = axes[1]
+    ax.grid(axis="y", color=LIGHT, lw=1)
     share, profit = profit_curve(y_true, y_prob)
-    axes[1].plot(share * 100, profit, color="#2563EB", lw=2.5, label="Call the top-scored x%")
+    ax.plot(share * 100, profit, color=INK, lw=2.2)
     rand_profit = share * len(y_true) * (y_true.mean() * REVENUE_PER_CONVERSION - COST_PER_CALL)
-    axes[1].plot(share * 100, rand_profit, "k--", lw=1, label="Call a random x%")
+    ax.plot(share * 100, rand_profit, color=GREY, lw=1.3, ls="--")
+    ax.text(62, rand_profit[int(0.6 * len(share))] - 4000, "calling a random x%", color=GREY, fontsize=9,
+            va="top", rotation=12)
+    ax.text(16, 60000, "calling the top-scored x%", color=INK, fontsize=9, fontweight="bold",
+            ha="left", va="center")
     best = profit.argmax()
-    for x, lab in [(BUDGET_SHARE, "Top 30%"), (share[best], "Maximum profit"), (1.0, "Everyone")]:
-        i = min(int(x * len(share)) - 1, len(share) - 1) if lab != "Maximum profit" else best
-        axes[1].scatter(share[i] * 100, profit[i], color="#DC2626", zorder=3)
-        axes[1].annotate(f"{lab}\n£{profit[i]:,.0f}", (share[i] * 100, profit[i]),
-                         textcoords="offset points",
-                         xytext={"Top 30%": (0, -40), "Maximum profit": (-55, -40), "Everyone": (0, -40)}[lab],
-                         ha="right" if lab == "Everyone" else "center",
-                         fontsize=9, color="#DC2626")
-    axes[1].yaxis.set_major_formatter(mtick.FuncFormatter(lambda x, _: f"£{int(x):,}"))
-    axes[1].set_xlabel("% of clients called (highest scores first)")
-    axes[1].set_ylabel("Net profit")
-    axes[1].set_title("Net profit by how far down the list we call", fontweight="bold")
-    axes[1].legend(loc="lower right")
-    sns.despine(ax=axes[1])
+    marks = [(int(BUDGET_SHARE * len(share)) - 1, "Top 30%", (0, -34), "center"),
+             (best, "Maximum", (-6, -34), "right"),
+             (len(share) - 1, "Everyone", (0, 12), "right")]
+    for i, lab, offset, ha in marks:
+        ax.scatter(share[i] * 100, profit[i], color=GOLD, edgecolor=INK, lw=0.6, s=55, zorder=3)
+        ax.annotate(f"{lab}\n£{profit[i]:,.0f}", (share[i] * 100, profit[i]), textcoords="offset points",
+                    xytext=offset, ha=ha, fontsize=9, color=DARK_GOLD, fontweight="bold")
+    ax.yaxis.set_major_formatter(mtick.FuncFormatter(lambda x, _: f"£{int(x / 1000)}k"))
+    ax.set_xlabel("% of clients called, highest scores first")
+    ax.set_xlim(0, 101)
+    ax.set_title("Net profit by how far down the list we call")
 
-    fig.suptitle("Campaign Strategy Comparison: Business Impact", fontweight="bold", y=1.02)
-    fig.tight_layout()
-    fig.savefig(FIGS / "09_strategy_comparison.png")
-    plt.close()
-    print("Saved: 09_strategy_comparison.png")
+    m, r = sub.Conversions.iloc[1], sub.Conversions.iloc[0]
+    frame(fig, f"At the same budget, the model wins {m / r:.1f} times as many subscriptions",
+          f"Held-out test set of {len(y_true):,} clients. Assumes £{REVENUE_PER_CONVERSION} revenue per "
+          f"subscription and £{COST_PER_CALL} per call.")
+    save(fig, FIGS / "09_strategy_comparison.png")
 
 
 def plot_cumulative_lift(y_true, y_prob) -> None:
@@ -143,88 +151,79 @@ def plot_cumulative_lift(y_true, y_prob) -> None:
     Cumulative gains (lift) curve: what fraction of all converters
     do we capture if we contact the top-X% of the scored list?
     """
-    sort_idx   = np.argsort(y_prob)[::-1]
-    y_sorted   = y_true[sort_idx]
-    cum_conv   = np.cumsum(y_sorted)
-    total_conv = y_true.sum()
-    n          = len(y_true)
-
+    y_sorted = y_true[np.argsort(y_prob)[::-1]]
+    n = len(y_true)
     pct_contacted = np.arange(1, n + 1) / n
-    pct_captured  = cum_conv / total_conv
-    random_line   = pct_contacted
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    # Cumulative gains
-    axes[0].plot(pct_contacted * 100, pct_captured * 100,
-                 color="#2563EB", lw=2.5, label="Model")
-    axes[0].plot([0, 100], [0, 100], "k--", lw=1, label="Random baseline")
-    axes[0].fill_between(pct_contacted * 100, pct_captured * 100,
-                         random_line * 100, alpha=0.08, color="#2563EB")
-    axes[0].set_xlabel("% of Clients Contacted")
-    axes[0].set_ylabel("% of Converters Captured")
-    axes[0].set_title("Cumulative Gains Curve", fontweight="bold")
-    axes[0].legend()
-    # Annotate 30% mark
-    idx_30 = int(0.30 * n)
-    axes[0].annotate(f"Top 30%:\n{pct_captured[idx_30]:.0%} of converters",
-                     xy=(30, pct_captured[idx_30] * 100),
-                     xytext=(45, pct_captured[idx_30] * 100 - 12),
-                     arrowprops=dict(arrowstyle="->", color="#DC2626"),
-                     color="#DC2626", fontsize=9)
-    sns.despine(ax=axes[0])
-
-    # Lift curve
+    pct_captured = np.cumsum(y_sorted) / y_true.sum()
     lift = pct_captured / pct_contacted
-    axes[1].plot(pct_contacted * 100, lift,
-                 color="#16A34A", lw=2.5, label="Lift")
-    axes[1].axhline(1, color="k", lw=1, linestyle="--", label="No lift")
-    axes[1].set_xlabel("% of Clients Contacted")
-    axes[1].set_ylabel("Lift over Random")
-    axes[1].set_title("Lift Curve", fontweight="bold")
-    axes[1].legend()
-    axes[1].set_xlim(0, 100)
-    sns.despine(ax=axes[1])
+    i30 = int(0.30 * n) - 1
 
-    fig.suptitle("Model Lift: Efficiency Gains over Random Outreach",
-                 fontweight="bold", y=1.02)
-    fig.tight_layout()
-    fig.savefig(FIGS / "10_lift_curve.png")
-    plt.close()
-    print("Saved: 10_lift_curve.png")
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
+    fig.subplots_adjust(top=0.78, wspace=0.28)
+    for ax in axes:
+        ax.grid(axis="y", color=LIGHT, lw=1)
+
+    ax = axes[0]
+    ax.fill_between(pct_contacted * 100, pct_captured * 100, pct_contacted * 100, color=GOLD, alpha=0.15, lw=0)
+    ax.plot(pct_contacted * 100, pct_captured * 100, color=INK, lw=2.2)
+    ax.plot([0, 100], [0, 100], color=GREY, lw=1.2, ls="--")
+    ax.text(74, 64, "random calling", color=GREY, fontsize=9, rotation=36, ha="center", va="top")
+    ax.vlines(30, 0, pct_captured[i30] * 100, color=GOLD, lw=1.2)
+    ax.scatter(30, pct_captured[i30] * 100, color=GOLD, edgecolor=INK, lw=0.6, s=55, zorder=3)
+    ax.annotate(f"top 30% of calls reach\n{pct_captured[i30]:.0%} of all subscribers", (30, pct_captured[i30] * 100),
+                xytext=(10, -40), textcoords="offset points", fontsize=9, color=DARK_GOLD, fontweight="bold")
+    ax.set(xlabel="% of clients called, highest scores first", ylabel="% of all subscribers reached",
+           xlim=(0, 100), ylim=(0, 101))
+    ax.set_title("Cumulative gains")
+
+    ax = axes[1]
+    ax.plot(pct_contacted * 100, lift, color=INK, lw=2.2)
+    ax.axhline(1, color=GREY, lw=1.2, ls="--")
+    ax.text(60, 0.9, "random calling", color=GREY, fontsize=9, ha="center", va="top")
+    ax.scatter(30, lift[i30], color=GOLD, edgecolor=INK, lw=0.6, s=55, zorder=3)
+    ax.annotate(f"{lift[i30]:.1f}x at 30%", (30, lift[i30]), xytext=(8, 8), textcoords="offset points",
+                fontsize=9, color=DARK_GOLD, fontweight="bold")
+    ax.set(xlabel="% of clients called, highest scores first", ylabel="Lift over random calling",
+           xlim=(0, 100), ylim=(0, None))
+    ax.yaxis.set_major_formatter(mtick.FuncFormatter(lambda x, _: f"{x:.0f}x"))
+    ax.set_title("Lift")
+
+    frame(fig, f"Calling the top 30% reaches {pct_captured[i30]:.0%} of all subscribers",
+          "How much of the total a scored call list captures, compared with calling clients at random.")
+    save(fig, FIGS / "10_lift_curve.png")
 
 
 def plot_precision_at_k(y_true, y_prob) -> None:
-    """Precision@K: how accurate is our targeting at each contact threshold?"""
-    sort_idx = np.argsort(y_prob)[::-1]
-    y_sorted = y_true[sort_idx]
-    n        = len(y_true)
-    k_range  = np.arange(1, n + 1)
+    """Precision@K: conversion rate among the clients called, at each depth of the list."""
+    y_sorted = y_true[np.argsort(y_prob)[::-1]]
+    n = len(y_true)
+    k_range = np.arange(1, n + 1)
     prec_at_k = np.cumsum(y_sorted) / k_range
-
     pct_range = k_range / n * 100
-    baseline  = y_true.mean()
+    baseline = y_true.mean()
+    i15 = int(0.15 * n) - 1
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(pct_range, prec_at_k, color="#2563EB", lw=2.5, label="Model precision@k")
-    ax.axhline(baseline, color="#94A3B8", lw=1.5, linestyle="--",
-               label=f"Baseline (overall rate: {baseline:.1%})")
-
-    # Shade top 15% and 30% zones
-    ax.axvspan(0, 15, alpha=0.07, color="#16A34A", label="Top 15%")
-    ax.axvspan(15, 30, alpha=0.05, color="#2563EB", label="Top 15–30%")
-
-    ax.set_xlabel("% of Scored List Contacted (highest → lowest)")
-    ax.set_ylabel("Precision (Conversion Rate Among Contacted)")
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-    ax.set_title("Precision@K — Targeting Efficiency Curve", fontweight="bold", pad=12)
-    ax.legend(fontsize=9)
+    fig, ax = plt.subplots(figsize=(9, 4.6))
+    fig.subplots_adjust(top=0.8)
+    ax.grid(axis="y", color=LIGHT, lw=1)
+    ax.axvspan(0, 15, color=GOLD, alpha=0.12, lw=0)
+    ax.plot(pct_range, prec_at_k, color=INK, lw=2.2)
+    ax.axhline(baseline, color=GREY, lw=1.2, ls="--")
+    ax.text(50, baseline - 0.015, f"average conversion ({baseline:.0%})", color=GREY, fontsize=9,
+            ha="center", va="top")
+    ax.scatter(15, prec_at_k[i15], color=GOLD, edgecolor=INK, lw=0.6, s=55, zorder=3)
+    ax.annotate(f"top 15%: {prec_at_k[i15]:.0%} convert", (15, prec_at_k[i15]), xytext=(10, 10),
+                textcoords="offset points", fontsize=9, color=DARK_GOLD, fontweight="bold")
+    ax.set_xlabel("% of clients called, highest scores first")
+    ax.set_ylabel("Conversion rate among clients called")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=0))
     ax.set_xlim(0, 80)
-    sns.despine(ax=ax)
-    fig.tight_layout()
-    fig.savefig(FIGS / "11_precision_at_k.png")
-    plt.close()
-    print("Saved: 11_precision_at_k.png")
+    ax.set_ylim(0, None)
+    frame(fig, f"The top 15% of scores convert at {prec_at_k[i15]:.0%}, "
+               f"{prec_at_k[i15] / baseline:.0f} times the average",
+          "Conversion rate among the clients called, as the call list goes deeper. The first few hundred "
+          "calls are noisy.")
+    save(fig, FIGS / "11_precision_at_k.png")
 
 
 def print_summary(df_strat: pd.DataFrame, y_true, y_prob) -> None:

@@ -6,12 +6,15 @@ Produces summary statistics, class balance overview, and key
 distribution plots saved to the figures/ directory.
 """
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
-import seaborn as sns
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from style import INK, GOLD, GREY, LIGHT, DARK_GOLD, DIV, apply_style, frame, save
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 ROOT    = Path(__file__).resolve().parents[1]
@@ -19,10 +22,7 @@ DATA    = ROOT / "data" / "bank_marketing.csv"
 FIGS    = ROOT / "figures"
 FIGS.mkdir(exist_ok=True)
 
-# ── Style ──────────────────────────────────────────────────────────────────
-PALETTE = {"yes": "#2563EB", "no": "#94A3B8"}
-sns.set_theme(style="whitegrid", font_scale=1.1)
-plt.rcParams.update({"figure.dpi": 150, "savefig.bbox": "tight"})
+apply_style()
 
 
 def load_data() -> pd.DataFrame:
@@ -46,115 +46,132 @@ def summary(df: pd.DataFrame) -> None:
 
 
 def plot_class_balance(df: pd.DataFrame) -> None:
-    fig, ax = plt.subplots(figsize=(5, 4))
-    counts = df["y"].value_counts()
-    bars = ax.bar(counts.index, counts.values,
-                  color=[PALETTE[k] for k in counts.index],
-                  edgecolor="white", linewidth=0.8, width=0.5)
-    for bar, val in zip(bars, counts.values):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 400,
-                f"{val:,}\n({val/len(df):.1%})",
-                ha="center", va="bottom", fontsize=10, fontweight="bold")
-    ax.set_title("Term Deposit Subscription: Class Balance", fontweight="bold", pad=12)
-    ax.set_xlabel("Subscribed?")
-    ax.set_ylabel("Number of Clients")
-    ax.yaxis.set_major_formatter(mtick.FuncFormatter(lambda x, _: f"{int(x):,}"))
-    ax.set_ylim(0, counts.max() * 1.18)
-    sns.despine(left=True)
-    fig.savefig(FIGS / "01_class_balance.png")
-    plt.close()
-    print("Saved: 01_class_balance.png")
+    counts = df["y"].value_counts().reindex(["no", "yes"])
+    fig, ax = plt.subplots(figsize=(8, 2.6))
+    fig.subplots_adjust(top=0.62, left=0.0, right=1.0)
+    left = 0
+    for label, col, txt in [("no", GREY, INK), ("yes", GOLD, DARK_GOLD)]:
+        n = counts[label]
+        ax.barh(0, n, left=left, color=col, height=0.6, edgecolor="white", lw=2)
+        name = "Subscribed" if label == "yes" else "Did not subscribe"
+        ax.text(left + n / 2 if label == "no" else left + n + 300, 0,
+                f"{name}\n{n:,} ({n / len(df):.1%})", ha="center" if label == "no" else "left",
+                va="center", fontsize=10, fontweight="bold", color="white" if label == "no" else txt)
+        left += n
+    ax.set_xlim(0, len(df) * 1.2)
+    ax.set_yticks([])
+    ax.set_xticks([])
+    ax.grid(False)
+    ax.spines["bottom"].set_visible(False)
+    frame(fig, "Only one call in nine ends in a subscription",
+          "Outcome of 41,188 phone contacts, May 2008 to November 2010. Accuracy would mislead: "
+          "\npredicting 'no' for everyone is right 89% of the time.")
+    save(fig, FIGS / "01_class_balance.png")
 
 
 def plot_numeric_distributions(df: pd.DataFrame) -> None:
-    numeric_cols = ["age", "duration", "campaign", "cons.price.idx",
-                    "cons.conf.idx", "euribor3m", "emp.var.rate"]
+    numeric_cols = ["duration", "campaign", "age", "euribor3m",
+                    "emp.var.rate", "cons.price.idx", "cons.conf.idx"]
     labels = {
-        "age": "Age", "duration": "Call Duration (s)",
-        "campaign": "Contacts This Campaign",
-        "cons.price.idx": "Consumer Price Index",
-        "cons.conf.idx": "Consumer Confidence Index",
-        "euribor3m": "Euribor 3-Month Rate",
-        "emp.var.rate": "Employment Variation Rate"
+        "age": "Age", "duration": "Call duration (s)",
+        "campaign": "Contacts this campaign",
+        "cons.price.idx": "Consumer price index",
+        "cons.conf.idx": "Consumer confidence index",
+        "euribor3m": "Euribor 3-month rate",
+        "emp.var.rate": "Employment variation rate",
     }
-    fig, axes = plt.subplots(2, 4, figsize=(18, 8))
+    clip = {"duration": 1500, "campaign": 15}
+    fig, axes = plt.subplots(2, 4, figsize=(13, 6.2))
+    fig.subplots_adjust(top=0.8, left=0.01, right=0.99, hspace=0.45, wspace=0.12)
     axes = axes.flatten()
-    for i, col in enumerate(numeric_cols):
-        ax = axes[i]
-        for label, grp in df.groupby("y"):
-            grp[col].hist(ax=ax, bins=35, alpha=0.65,
-                          color=PALETTE[label], label=label, density=True)
-        ax.set_title(labels[col], fontweight="bold")
-        ax.set_xlabel("")
-        ax.set_ylabel("Density" if i % 4 == 0 else "")
-        ax.legend(title="Subscribed", fontsize=8)
-        sns.despine(ax=ax, left=True)
+    for ax, col in zip(axes, numeric_cols):
+        x = df[col].clip(upper=clip.get(col, np.inf))
+        bins = np.histogram_bin_edges(x, bins=35) if col != "campaign" else np.arange(0.5, 16.5)
+        for label, colour, alpha in [("no", GREY, 0.55), ("yes", GOLD, 0.75)]:
+            ax.hist(x[df["y"] == label], bins=bins, density=True, color=colour, alpha=alpha, lw=0)
+        ax.set_title(labels[col], fontsize=10, color=DARK_GOLD if col == "duration" else INK)
+        ax.set_yticks([])
+        ax.grid(False)
+    axes[0].text(0.98, 0.95, "known only after\nthe call, so excluded", transform=axes[0].transAxes,
+                 ha="right", va="top", fontsize=8.5, color=DARK_GOLD)
     axes[-1].set_visible(False)
-    fig.suptitle("Numeric Feature Distributions by Subscription Outcome",
-                 fontweight="bold", y=1.01, fontsize=13)
-    fig.tight_layout()
-    fig.savefig(FIGS / "02_numeric_distributions.png")
-    plt.close()
-    print("Saved: 02_numeric_distributions.png")
+    fig.text(0.0, 0.875, "\u25a0", color=GOLD, fontsize=13, va="center")
+    fig.text(0.02, 0.875, "Subscribed", color=DARK_GOLD, fontsize=9.5, fontweight="bold", va="center")
+    fig.text(0.12, 0.875, "\u25a0", color=GREY, fontsize=13, va="center")
+    fig.text(0.14, 0.875, "Did not subscribe", color=INK, fontsize=9.5, fontweight="bold", va="center")
+    frame(fig, "Call duration separates subscribers best, but only after the call is over",
+          "Distribution of each feature by outcome (each group scaled to the same area). "
+          "The economic indicators take only\na handful of values because they change month by month, "
+          "not client by client.")
+    save(fig, FIGS / "02_numeric_distributions.png")
 
 
 def plot_categorical_conversion(df: pd.DataFrame) -> None:
     cats = {
-        "job":       "Job Type",
-        "education": "Education Level",
-        "contact":   "Contact Method",
-        "month":     "Last Contact Month",
-        "poutcome":  "Previous Campaign Outcome"
+        "poutcome":  "Previous campaign outcome",
+        "job":       "Job",
+        "month":     "Month of last contact",
+        "contact":   "Contact method",
+        "education": "Education",
     }
-    month_order = ["mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
+    month_order = ["mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    overall = (df["y"] == "yes").mean()
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(13, 7.6))
+    fig.subplots_adjust(top=0.84, left=0.09, right=0.99, hspace=0.3, wspace=0.65)
     axes = axes.flatten()
 
-    for i, (col, title) in enumerate(cats.items()):
-        ax = axes[i]
-        conv = (df.groupby(col)["y"]
-                  .apply(lambda s: (s == "yes").mean())
-                  .reset_index()
-                  .rename(columns={"y": "conversion_rate"}))
+    for ax, (col, title) in zip(axes, cats.items()):
+        conv = df.groupby(col)["y"].apply(lambda s: (s == "yes").mean())
+        if col == "poutcome":
+            conv = conv.rename({"nonexistent": "not contacted before"})
         if col == "month":
-            conv["month"] = pd.Categorical(conv["month"], categories=month_order, ordered=True)
-            conv = conv.sort_values("month")
+            conv = conv.reindex(month_order[::-1])
         else:
-            conv = conv.sort_values("conversion_rate", ascending=False)
-
-        bars = ax.barh(conv[col], conv["conversion_rate"],
-                       color="#2563EB", alpha=0.85, edgecolor="white")
-        for bar, rate in zip(bars, conv["conversion_rate"]):
-            ax.text(bar.get_width() + 0.003, bar.get_y() + bar.get_height() / 2,
-                    f"{rate:.0%}", va="center", fontsize=8)
-        ax.set_title(title, fontweight="bold")
-        ax.xaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-        ax.set_xlim(0, conv["conversion_rate"].max() * 1.25)
-        sns.despine(ax=ax, left=True)
-
+            conv = conv.sort_values()
+        colours = [GOLD if r >= 2 * overall else INK for r in conv]
+        ax.barh(conv.index, conv.values, color=colours, height=0.65)
+        for i, rate in enumerate(conv.values):
+            ax.text(rate + 0.01, i, f"{rate:.0%}", va="center", fontsize=8.5,
+                    color=DARK_GOLD if rate >= 2 * overall else INK)
+        ax.axvline(overall, color=GREY, lw=1, ls="--")
+        ax.set_title(title, fontsize=10.5)
+        ax.xaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=0))
+        ax.set_xlim(0, max(conv.max() * 1.25, 0.2))
+        ax.tick_params(axis="y", labelsize=9)
+    axes[3].text(overall + 0.003, 0.5, "average 11%", color=GREY, fontsize=8.5, va="center")
     axes[-1].set_visible(False)
-    fig.suptitle("Conversion Rate by Categorical Feature",
-                 fontweight="bold", y=1.01, fontsize=13)
-    fig.tight_layout()
-    fig.savefig(FIGS / "03_categorical_conversion.png")
-    plt.close()
-    print("Saved: 03_categorical_conversion.png")
+    frame(fig, "A past subscription is the strongest signal: 65% of those clients subscribed again",
+          "Share of contacts that ended in a subscription. Marigold marks groups converting at more than "
+          "twice the\naverage (dashed line).")
+    save(fig, FIGS / "03_categorical_conversion.png")
 
 
 def plot_correlation_heatmap(df: pd.DataFrame) -> None:
-    num_df = df.select_dtypes(include=np.number)
-    corr = num_df.corr()
-    mask = np.triu(np.ones_like(corr, dtype=bool))
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(corr, mask=mask, annot=True, fmt=".2f", linewidths=0.5,
-                cmap="RdBu_r", center=0, ax=ax,
-                annot_kws={"size": 8})
-    ax.set_title("Correlation Matrix — Numeric Features", fontweight="bold", pad=12)
-    fig.tight_layout()
-    fig.savefig(FIGS / "04_correlation_heatmap.png")
-    plt.close()
-    print("Saved: 04_correlation_heatmap.png")
+    corr = df.select_dtypes(include=np.number).corr()
+    n = len(corr)
+    rows, cols = corr.index[1:], corr.columns[:-1]   # drop the empty first row and last column
+    shown = np.where(np.tril(np.ones((n, n), dtype=bool), k=-1), corr.values, np.nan)[1:, :-1]
+    fig, ax = plt.subplots(figsize=(8.4, 6.6))
+    fig.subplots_adjust(top=0.86, left=0.16, right=0.96)
+    ax.imshow(shown, cmap=DIV, vmin=-1, vmax=1)
+    econ = {"emp.var.rate", "cons.price.idx", "cons.conf.idx", "euribor3m", "nr.employed"}
+    for i, r in enumerate(rows):
+        for j, c in enumerate(cols):
+            if np.isnan(shown[i, j]):
+                continue
+            v = shown[i, j] + 0.0
+            strong = abs(v) >= 0.7 and r in econ and c in econ
+            ax.text(j, i, f"{v:.2f}".replace("-0.00", "0.00"), ha="center", va="center", fontsize=8.5,
+                    color=INK, fontweight="bold" if strong else "normal")
+    ax.set_xticks(range(len(cols)), cols, rotation=45, ha="right")
+    ax.set_yticks(range(len(rows)), rows)
+    ax.grid(False)
+    ax.spines["bottom"].set_visible(False)
+    frame(fig, "The economic indicators move together because they all track time",
+          "Correlation between numeric features (marigold positive, blue negative). Euribor, the number "
+          "employed\nand the employment variation rate are almost interchangeable (0.9 or more).")
+    save(fig, FIGS / "04_correlation_heatmap.png")
 
 
 if __name__ == "__main__":
