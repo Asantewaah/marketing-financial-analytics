@@ -4,5 +4,4 @@ scikit-learn>=1.4
 xgboost>=2.0
 shap>=0.44
 matplotlib>=3.7
-seaborn>=0.13
 jupyter
